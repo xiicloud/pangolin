@@ -69,7 +69,7 @@ func (hub *Hub) ListenAndServe(addr string) error {
 				if max := 1 * time.Second; tempDelay > max {
 					tempDelay = max
 				}
-				log.Errorf("rrpc: Accept error: %v; retrying in %v", err, tempDelay)
+				log.Errorf("pangolin: Accept error: %v; retrying in %v", err, tempDelay)
 				time.Sleep(tempDelay)
 				continue
 			}
@@ -81,14 +81,14 @@ func (hub *Hub) ListenAndServe(addr string) error {
 			msg := make(map[string]string)
 			err := json.NewDecoder(conn).Decode(&msg)
 			if err != nil {
-				log.Error("rrpc: ", err)
+				log.Error("pangolin: ", err)
 				return
 			}
-			log.Debug("rrpc: got message ", msg)
+			log.Debug("pangolin: got message ", msg)
 
 			id, ok := msg["id"]
 			if !ok {
-				log.Error("rrpc: malformed frame. id is missing")
+				log.Error("pangolin: malformed frame. id is missing")
 				return
 			}
 
@@ -98,11 +98,11 @@ func (hub *Hub) ListenAndServe(addr string) error {
 			case "worker":
 				hub.addWorkerConn(id, conn)
 			case "ping":
-				log.Debug("rrpc: ping from ", id)
+				log.Debug("pangolin: ping from ", id)
 			case "error":
-				log.Error("rrpc: error occured, ", msg["message"])
+				log.Error("pangolin: error occured, ", msg["message"])
 			default:
-				log.Error("rrpc: malformed frame. cmd is missing")
+				log.Error("pangolin: malformed frame. cmd is missing")
 				return
 			}
 
@@ -113,7 +113,7 @@ func (hub *Hub) ListenAndServe(addr string) error {
 }
 
 func (hub *Hub) addAgentConn(id string, conn net.Conn) {
-	log.Debug("rrpc: add agent ", id)
+	log.Debug("pangolin: add agent ", id)
 	hub.agentsLock.Lock()
 	defer hub.agentsLock.Unlock()
 	oldConn, ok := hub.onlineAgents[id]
@@ -198,7 +198,7 @@ func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Du
 			return conn, nil
 		}
 	}
-	return nil, errors.New("rrpc: timeout occured")
+	return nil, errors.New("pangolin: timeout occured")
 }
 
 // addr must be the ID of the agent.

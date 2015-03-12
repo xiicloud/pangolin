@@ -56,8 +56,17 @@ func NewAgent(id, peerAddr, serviceAddr string) (*Agent, error) {
 	}, nil
 }
 
+func (self *Agent) dial(addr *url.URL) (conn net.Conn, err error) {
+	if addr.Scheme == "unix" {
+		conn, err = net.Dial(addr.Scheme, addr.Path)
+	} else {
+		conn, err = net.Dial(addr.Scheme, addr.Host)
+	}
+	return
+}
+
 func (self *Agent) Join() error {
-	conn, err := net.Dial(self.peerUrl.Scheme, self.peerUrl.Host)
+	conn, err := self.dial(self.peerUrl)
 	if err != nil {
 		return err
 	}
@@ -80,15 +89,15 @@ func (self *Agent) Serve() error {
 		msg := make(map[string]string)
 		err := self.dec.Decode(&msg)
 		if err != nil {
-			log.Error("agent: json error: ", err)
+			log.Error("pangolin-agent: json error: ", err)
 			return err
 		}
-		log.Debug("agent: got command ", msg)
+		log.Debug("pangolin-agent: got command ", msg)
 		switch msg["Cmd"] {
 		case "new_conn":
-			backend, err := net.Dial(self.serviceUrl.Scheme, self.serviceUrl.Host)
+			backend, err := self.dial(self.serviceUrl)
 			if err != nil {
-				log.Error("agent: backend connection failed: ", err)
+				log.Error("pangolin-agent: backend connection failed: ", err)
 				self.reportError(err.Error())
 				continue
 			}
@@ -106,19 +115,19 @@ func (self *Agent) reportError(msg string) {
 }
 
 func (self *Agent) proxy(backend net.Conn, connId string) error {
-	conn, err := net.Dial(self.peerUrl.Scheme, self.peerUrl.Host)
+	conn, err := self.dial(self.peerUrl)
 	if err != nil {
-		log.Error("agent: connection to controller failed: ", err)
+		log.Error("pangolin-agent: connection to controller failed: ", err)
 		return err
 	}
 	defer backend.Close()
 	defer conn.Close()
 	_, err = fmt.Fprintf(conn, `{"id":%q,"cmd":"worker"}`, connId)
 	if err != nil {
-		log.Error("agent: report connection failed, ", err)
+		log.Error("pangolin-agent: report connection failed, ", err)
 		return err
 	} else {
-		log.Debug("agent: new connection establisthed")
+		log.Debug("pangolin-agent: new connection establisthed")
 	}
 	go io.Copy(backend, conn)
 	_, err = io.Copy(conn, backend)
