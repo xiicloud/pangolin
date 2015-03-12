@@ -1,4 +1,4 @@
-package rrpc
+package pangolin
 
 import (
 	"fmt"

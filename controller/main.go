@@ -7,25 +7,25 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/mountkin/reverse-rpc"
+	"github.com/mountkin/pangolin"
 )
 
 func main() {
 	log.SetLevel(log.DebugLevel)
-	bus := rrpc.NewBus()
+	hub := pangolin.NewHub()
 	ech := make(chan error)
 	go func(ech chan<- error) {
-		ech <- bus.ListenAndServe(":99")
+		ech <- hub.ListenAndServe(":9000")
 	}(ech)
 
 	client := http.Client{
 		Transport: &http.Transport{
-			Dial: bus.Dial,
+			Dial: hub.Dial,
 		},
 	}
 
 	time.Sleep(time.Second * 5)
-	resp, err := client.Get("http://node1")
+	resp, err := client.Get("http://node1/info")
 	if err != nil {
 		log.Error("http get: ", err)
 	} else {

@@ -1,4 +1,4 @@
-package rrpc
+package pangolin
 
 import (
 	"encoding/json"
@@ -22,7 +22,7 @@ type Command struct {
 	Args   []interface{}
 }
 
-type Bus struct {
+type Hub struct {
 	idGen IdGenerator
 
 	// The connections that issued by agent and are used for transporting instructions.
@@ -40,15 +40,15 @@ type Bus struct {
 	workerLock         sync.RWMutex
 }
 
-func NewBus() *Bus {
-	return &Bus{
+func NewHub() *Hub {
+	return &Hub{
 		idGen:              newIdGenerator("cmd"),
 		onlineAgents:       make(map[string]net.Conn),
 		workerConnectsions: make(map[string]net.Conn),
 	}
 }
 
-func (bus *Bus) ListenAndServe(addr string) error {
+func (hub *Hub) ListenAndServe(addr string) error {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -77,7 +77,7 @@ func (bus *Bus) ListenAndServe(addr string) error {
 		}
 		tempDelay = 0
 
-		go func(bus *Bus, conn net.Conn) {
+		go func(hub *Hub, conn net.Conn) {
 			msg := make(map[string]string)
 			err := json.NewDecoder(conn).Decode(&msg)
 			if err != nil {
@@ -94,9 +94,9 @@ func (bus *Bus) ListenAndServe(addr string) error {
 
 			switch msg["cmd"] {
 			case "join":
-				bus.addAgentConn(id, conn)
+				hub.addAgentConn(id, conn)
 			case "worker":
-				bus.addWorkerConn(id, conn)
+				hub.addWorkerConn(id, conn)
 			case "ping":
 				log.Debug("rrpc: ping from ", id)
 			case "error":
@@ -107,71 +107,71 @@ func (bus *Bus) ListenAndServe(addr string) error {
 			}
 
 			// Don't close the conn!!!
-		}(bus, conn)
+		}(hub, conn)
 	}
 	return nil
 }
 
-func (bus *Bus) addAgentConn(id string, conn net.Conn) {
+func (hub *Hub) addAgentConn(id string, conn net.Conn) {
 	log.Debug("rrpc: add agent ", id)
-	bus.agentsLock.Lock()
-	defer bus.agentsLock.Unlock()
-	oldConn, ok := bus.onlineAgents[id]
+	hub.agentsLock.Lock()
+	defer hub.agentsLock.Unlock()
+	oldConn, ok := hub.onlineAgents[id]
 	if ok {
 		// close the stale connection
 		oldConn.Close()
 	}
-	bus.onlineAgents[id] = conn
+	hub.onlineAgents[id] = conn
 }
 
-func (bus *Bus) CloseAgent(id string) error {
-	bus.agentsLock.Lock()
-	defer bus.agentsLock.Unlock()
-	conn, ok := bus.onlineAgents[id]
+func (hub *Hub) CloseAgent(id string) error {
+	hub.agentsLock.Lock()
+	defer hub.agentsLock.Unlock()
+	conn, ok := hub.onlineAgents[id]
 	if ok {
-		delete(bus.onlineAgents, id)
+		delete(hub.onlineAgents, id)
 		return conn.Close()
 	}
 	return nil
 }
 
-func (bus *Bus) addWorkerConn(id string, conn net.Conn) {
-	bus.workerLock.Lock()
-	defer bus.workerLock.Unlock()
-	_, ok := bus.workerConnectsions[id]
+func (hub *Hub) addWorkerConn(id string, conn net.Conn) {
+	hub.workerLock.Lock()
+	defer hub.workerLock.Unlock()
+	_, ok := hub.workerConnectsions[id]
 	if ok {
 		// There is already a worker connection with the same ID.
 		// The new worker can't be added.
 		conn.Close()
 		return
 	}
-	bus.workerConnectsions[id] = conn
+	hub.workerConnectsions[id] = conn
 }
 
-func (bus *Bus) CloseWorker(id string) error {
-	bus.workerLock.Lock()
-	defer bus.workerLock.Unlock()
-	conn, ok := bus.workerConnectsions[id]
+func (hub *Hub) CloseWorker(id string) error {
+	hub.workerLock.Lock()
+	defer hub.workerLock.Unlock()
+	conn, ok := hub.workerConnectsions[id]
 	if ok {
-		delete(bus.workerConnectsions, id)
+		delete(hub.workerConnectsions, id)
 		return conn.Close()
 	}
 	return nil
 }
 
-func (bus *Bus) GetWorkerConn(id string) net.Conn {
-	bus.workerLock.RLock()
-	defer bus.workerLock.RUnlock()
-	return bus.workerConnectsions[id]
+func (hub *Hub) GetWorkerConn(id string) net.Conn {
+	hub.workerLock.RLock()
+	defer hub.workerLock.RUnlock()
+	return hub.workerConnectsions[id]
 }
 
-func (bus *Bus) GetAgentConn(id string) net.Conn {
-	bus.agentsLock.RLock()
-	defer bus.agentsLock.RUnlock()
-	return bus.onlineAgents[id]
+func (hub *Hub) GetAgentConn(id string) net.Conn {
+	hub.agentsLock.RLock()
+	defer hub.agentsLock.RUnlock()
+	return hub.onlineAgents[id]
 }
 
-func (bus *Bus) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Duration) (net.Conn, error) {
+func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Duration) (net.Conn, error) {
 	cmd := Command{
 		ConnId: connId,
 		Cmd:    "new_conn",
@@ -193,7 +193,7 @@ func (bus *Bus) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Du
 	}()
 
 	for atomic.LoadInt32(&timedOut) == 0 {
-		conn = bus.GetWorkerConn(connId)
+		conn = hub.GetWorkerConn(connId)
 		if conn != nil {
 			return conn, nil
 		}
@@ -202,8 +202,8 @@ func (bus *Bus) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Du
 }
 
 // addr must be the ID of the agent.
-func (bus *Bus) Dial(_, addr string) (net.Conn, error) {
-	agentConn := bus.GetAgentConn(strings.Split(addr, ":")[0])
+func (hub *Hub) Dial(_, addr string) (net.Conn, error) {
+	agentConn := hub.GetAgentConn(strings.Split(addr, ":")[0])
 	if agentConn == nil {
 		return nil, &net.OpError{
 			Op:   "dial",
@@ -213,10 +213,10 @@ func (bus *Bus) Dial(_, addr string) (net.Conn, error) {
 	}
 
 	conn := &Conn{
-		id:  bus.idGen.Generate(),
-		bus: bus,
+		id:  hub.idGen.Generate(),
+		hub: hub,
 	}
-	netConn, err := bus.NewWorkerConn(agentConn, conn.id, DefaultDialTimeout)
+	netConn, err := hub.NewWorkerConn(agentConn, conn.id, DefaultDialTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -224,19 +224,19 @@ func (bus *Bus) Dial(_, addr string) (net.Conn, error) {
 	return conn, nil
 }
 
-func (bus *Bus) DialTimeout(network, addr string, _ time.Duration) (net.Conn, error) {
-	return bus.Dial(network, addr)
+func (hub *Hub) DialTimeout(network, addr string, _ time.Duration) (net.Conn, error) {
+	return hub.Dial(network, addr)
 }
 
 // Implement net.Conn interface.
 type Conn struct {
-	bus *Bus
+	hub *Hub
 	id  string
 	net.Conn
 }
 
 func (conn *Conn) Close() error {
-	return conn.bus.CloseWorker(conn.id)
+	return conn.hub.CloseWorker(conn.id)
 }
 
 func (conn *Conn) LocalAddr() net.Addr {
