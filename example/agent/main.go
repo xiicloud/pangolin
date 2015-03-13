@@ -18,7 +18,7 @@ func main() {
 		})
 		http.ListenAndServe(":5123", nil)
 	}()
-	agent, err := pangolin.NewAgent("node1", "tcp://localhost:9000", "http://localhost:5123", nil)
+	agent, err := pangolin.NewAgent("node1", "tcp://localhost:9000", "http://localhost:5123", nil, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

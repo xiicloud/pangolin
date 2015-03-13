@@ -22,13 +22,14 @@ type Agent struct {
 	enc        *json.Encoder
 	tlsConfig  *tls.Config
 	hijacked   bool
+	auth       Authenticator
 }
 
 var (
 	ErrUnsupportedProtocol = errors.New("protocol not supported")
 )
 
-func NewAgent(id, peerAddr, serviceAddr string, tlsConfig *tls.Config) (*Agent, error) {
+func NewAgent(id, peerAddr, serviceAddr string, tlsConfig *tls.Config, auth Authenticator) (*Agent, error) {
 	peerUrl, err := url.Parse(peerAddr)
 	if err != nil {
 		return nil, err
@@ -55,6 +56,7 @@ func NewAgent(id, peerAddr, serviceAddr string, tlsConfig *tls.Config) (*Agent, 
 		serviceUrl: serviceUrl,
 		id:         id,
 		tlsConfig:  tlsConfig,
+		auth:       auth,
 	}, nil
 }
 
@@ -123,12 +125,17 @@ func (self *Agent) reportError(msg string) {
 	})
 }
 
-func (self *Agent) newConn() (net.Conn, error) {
+func (self *Agent) newConn() (conn net.Conn, err error) {
 	if self.peerUrl.Scheme == "http" || self.peerUrl.Scheme == "https" {
-		return self.HijackHTTP()
+		conn, err = self.HijackHTTP()
 	} else {
-		return self.dial(self.peerUrl)
+		conn, err = self.dial(self.peerUrl)
 	}
+
+	if err == nil && self.auth != nil {
+		fmt.Fprintf(conn, `{"token":%q}`, self.auth.Token())
+	}
+	return
 }
 
 func (self *Agent) proxy(backend net.Conn, connId string) error {

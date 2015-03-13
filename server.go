@@ -18,6 +18,11 @@ const (
 	DefaultDialTimeout = time.Second * 3
 )
 
+type Authenticator interface {
+	Auth(token string) error
+	Token() string
+}
+
 type Command struct {
 	ConnId string
 	Cmd    string
@@ -40,13 +45,16 @@ type Hub struct {
 	// The key of the map is the ID that the "new_connection" command had specified.
 	workerConnectsions map[string]net.Conn
 	workerLock         sync.RWMutex
+
+	auth Authenticator
 }
 
-func NewHub() *Hub {
+func NewHub(auth Authenticator) *Hub {
 	return &Hub{
 		idGen:              newIdGenerator("cmd"),
 		onlineAgents:       make(map[string]net.Conn),
 		workerConnectsions: make(map[string]net.Conn),
+		auth:               auth,
 	}
 }
 
@@ -84,8 +92,26 @@ func (hub *Hub) ListenAndServe(addr string) error {
 }
 
 func (hub *Hub) Handle(conn net.Conn) {
+	dec := json.NewDecoder(conn)
+	if hub.auth != nil {
+		credentials := make(map[string]string)
+		err := dec.Decode(&credentials)
+		if err != nil {
+			log.Error("pangolin: json ", err)
+			conn.Close()
+			return
+		}
+
+		err = hub.auth.Auth(credentials["token"])
+		if err != nil {
+			log.Error("pangolin: auth failed ", err)
+			conn.Close()
+			return
+		}
+	}
+
 	msg := make(map[string]string)
-	err := json.NewDecoder(conn).Decode(&msg)
+	err := dec.Decode(&msg)
 	if err != nil {
 		conn.Close()
 		log.Error("pangolin: ", err)
@@ -103,8 +129,6 @@ func (hub *Hub) Handle(conn net.Conn) {
 		hub.AddAgentConn(id, conn)
 	case "worker":
 		hub.AddWorkerConn(id, conn)
-	case "ping":
-		log.Debug("pangolin: ping from ", id)
 	case "error":
 		log.Error("pangolin: error occured, ", msg["message"])
 	default:

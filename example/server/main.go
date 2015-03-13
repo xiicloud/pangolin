@@ -12,7 +12,7 @@ import (
 
 func main() {
 	log.SetLevel(log.DebugLevel)
-	hub := pangolin.NewHub()
+	hub := pangolin.NewHub(nil)
 	ech := make(chan error)
 	go func(ech chan<- error) {
 		ech <- hub.ListenAndServe(":9000")
