@@ -16,10 +16,11 @@ import (
 
 const (
 	DefaultDialTimeout = time.Second * 3
+	DefaultMaxIdleTime = time.Second * 35
 )
 
 type Authenticator interface {
-	Auth(token string) error
+	Auth(id, token string) error
 	Token() string
 }
 
@@ -43,18 +44,23 @@ type Hub struct {
 	// A new connection is created by the agent once it receives the "new_connection" instruction.
 	// The connection is closed when the RPC call is finished.
 	// The key of the map is the ID that the "new_connection" command had specified.
-	workerConnectsions map[string]net.Conn
-	workerLock         sync.RWMutex
+	workerConnections map[string]net.Conn
+	workerLock        sync.RWMutex
+
+	// A guard to ensure only connections issued from the Dial method are accepted.
+	pendingWorkers map[string]struct{}
+	pendingLock    sync.RWMutex
 
 	auth Authenticator
 }
 
 func NewHub(auth Authenticator) *Hub {
 	return &Hub{
-		idGen:              newIdGenerator("cmd"),
-		onlineAgents:       make(map[string]net.Conn),
-		workerConnectsions: make(map[string]net.Conn),
-		auth:               auth,
+		idGen:             newIdGenerator("cmd"),
+		onlineAgents:      make(map[string]net.Conn),
+		workerConnections: make(map[string]net.Conn),
+		pendingWorkers:    make(map[string]struct{}),
+		auth:              auth,
 	}
 }
 
@@ -102,7 +108,7 @@ func (hub *Hub) Handle(conn net.Conn) {
 			return
 		}
 
-		err = hub.auth.Auth(credentials["token"])
+		err = hub.auth.Auth(credentials["id"], credentials["token"])
 		if err != nil {
 			log.Error("pangolin: auth failed ", err)
 			conn.Close()
@@ -179,24 +185,31 @@ func (hub *Hub) CloseAgent(id string) error {
 
 func (hub *Hub) AddWorkerConn(id string, conn net.Conn) {
 	log.Debug("pangolin: AddWorkerConn ", id)
+
+	// Close unexpected connection.
+	if !hub.hasPendingWorker(id) {
+		conn.Close()
+		return
+	}
+
 	hub.workerLock.Lock()
 	defer hub.workerLock.Unlock()
-	_, ok := hub.workerConnectsions[id]
+	_, ok := hub.workerConnections[id]
 	if ok {
 		// There is already a worker connection with the same ID.
 		// The new worker can't be added.
 		conn.Close()
 		return
 	}
-	hub.workerConnectsions[id] = conn
+	hub.workerConnections[id] = conn
 }
 
 func (hub *Hub) CloseWorker(id string) error {
 	hub.workerLock.Lock()
 	defer hub.workerLock.Unlock()
-	conn, ok := hub.workerConnectsions[id]
+	conn, ok := hub.workerConnections[id]
 	if ok {
-		delete(hub.workerConnectsions, id)
+		delete(hub.workerConnections, id)
 		return conn.Close()
 	}
 	return nil
@@ -205,13 +218,32 @@ func (hub *Hub) CloseWorker(id string) error {
 func (hub *Hub) GetWorkerConn(id string) net.Conn {
 	hub.workerLock.RLock()
 	defer hub.workerLock.RUnlock()
-	return hub.workerConnectsions[id]
+	return hub.workerConnections[id]
 }
 
 func (hub *Hub) GetAgentConn(id string) net.Conn {
 	hub.agentsLock.RLock()
 	defer hub.agentsLock.RUnlock()
 	return hub.onlineAgents[id]
+}
+
+func (hub *Hub) addPendingWorker(id string) {
+	hub.pendingLock.Lock()
+	hub.pendingWorkers[id] = struct{}{}
+	hub.pendingLock.Unlock()
+}
+
+func (hub *Hub) removePendingWorker(id string) {
+	hub.pendingLock.Lock()
+	delete(hub.pendingWorkers, id)
+	hub.pendingLock.Unlock()
+}
+
+func (hub *Hub) hasPendingWorker(id string) bool {
+	hub.pendingLock.RLock()
+	defer hub.pendingLock.RUnlock()
+	_, ok := hub.pendingWorkers[id]
+	return ok
 }
 
 func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Duration) (net.Conn, error) {
@@ -230,6 +262,8 @@ func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Du
 		timer    = time.NewTimer(timeout)
 	)
 	defer timer.Stop()
+	hub.addPendingWorker(connId)
+	defer hub.removePendingWorker(connId)
 	go func() {
 		<-timer.C
 		atomic.StoreInt32(&timedOut, 1)
@@ -238,6 +272,9 @@ func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Du
 	for atomic.LoadInt32(&timedOut) == 0 {
 		conn = hub.GetWorkerConn(connId)
 		if conn != nil {
+			hub.workerLock.Lock()
+			delete(hub.workerConnections, connId)
+			hub.workerLock.Unlock()
 			return conn, nil
 		}
 	}

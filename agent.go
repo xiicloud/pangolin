@@ -21,7 +21,6 @@ type Agent struct {
 	dec        *json.Decoder
 	enc        *json.Encoder
 	tlsConfig  *tls.Config
-	hijacked   bool
 	auth       Authenticator
 }
 
@@ -133,7 +132,7 @@ func (self *Agent) newConn() (conn net.Conn, err error) {
 	}
 
 	if err == nil && self.auth != nil {
-		fmt.Fprintf(conn, `{"token":%q}`, self.auth.Token())
+		fmt.Fprintf(conn, `{"id":%q,"token":%q}`, self.id, self.auth.Token())
 	}
 	return
 }

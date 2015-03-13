@@ -114,7 +114,6 @@ func tlsDialWithDialer(dialer *net.Dialer, network, addr string, config *tls.Con
 }
 
 func (self *Agent) HijackHTTP() (net.Conn, error) {
-	self.hijacked = true
 	url := self.peerUrl.String()
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
