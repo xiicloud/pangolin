@@ -1,6 +1,7 @@
 package pangolin
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,13 +20,15 @@ type Agent struct {
 	conn       net.Conn
 	dec        *json.Decoder
 	enc        *json.Encoder
+	tlsConfig  *tls.Config
+	hijacked   bool
 }
 
 var (
 	ErrUnsupportedProtocol = errors.New("protocol not supported")
 )
 
-func NewAgent(id, peerAddr, serviceAddr string) (*Agent, error) {
+func NewAgent(id, peerAddr, serviceAddr string, tlsConfig *tls.Config) (*Agent, error) {
 	peerUrl, err := url.Parse(peerAddr)
 	if err != nil {
 		return nil, err
@@ -35,14 +38,12 @@ func NewAgent(id, peerAddr, serviceAddr string) (*Agent, error) {
 		return nil, err
 	}
 
-	if peerUrl.Scheme == "http" || peerUrl.Scheme == "https" {
-		peerUrl.Scheme = "tcp"
-	}
 	if serviceUrl.Scheme == "http" || serviceUrl.Scheme == "https" {
 		serviceUrl.Scheme = "tcp"
 	}
 
-	if peerUrl.Scheme != "tcp" && peerUrl.Scheme != "unix" {
+	if peerUrl.Scheme != "tcp" && peerUrl.Scheme != "unix" &&
+		peerUrl.Scheme != "http" && peerUrl.Scheme != "https" {
 		return nil, ErrUnsupportedProtocol
 	}
 	if serviceUrl.Scheme != "tcp" && serviceUrl.Scheme != "unix" {
@@ -53,20 +54,28 @@ func NewAgent(id, peerAddr, serviceAddr string) (*Agent, error) {
 		peerUrl:    peerUrl,
 		serviceUrl: serviceUrl,
 		id:         id,
+		tlsConfig:  tlsConfig,
 	}, nil
 }
 
-func (self *Agent) dial(addr *url.URL) (conn net.Conn, err error) {
-	if addr.Scheme == "unix" {
-		conn, err = net.Dial(addr.Scheme, addr.Path)
-	} else {
-		conn, err = net.Dial(addr.Scheme, addr.Host)
+func (self *Agent) dial(addr *url.URL) (net.Conn, error) {
+	if self.tlsConfig != nil && addr.Scheme != "unix" {
+		return tlsDial(addr.Scheme, addr.Host, self.tlsConfig)
 	}
-	return
+
+	switch addr.Scheme {
+	case "unix":
+		return net.Dial(addr.Scheme, addr.Path)
+	case "tcp", "http", "https":
+		return net.Dial("tcp", addr.Host)
+	default:
+		return nil, ErrUnsupportedProtocol
+	}
 }
 
 func (self *Agent) Join() error {
-	conn, err := self.dial(self.peerUrl)
+	conn, err := self.newConn()
+
 	if err != nil {
 		return err
 	}
@@ -114,23 +123,33 @@ func (self *Agent) reportError(msg string) {
 	})
 }
 
+func (self *Agent) newConn() (net.Conn, error) {
+	if self.peerUrl.Scheme == "http" || self.peerUrl.Scheme == "https" {
+		return self.HijackHTTP()
+	} else {
+		return self.dial(self.peerUrl)
+	}
+}
+
 func (self *Agent) proxy(backend net.Conn, connId string) error {
-	conn, err := self.dial(self.peerUrl)
+	conn, err := self.newConn()
 	if err != nil {
 		log.Error("pangolin-agent: connection to controller failed: ", err)
 		return err
 	}
 	defer backend.Close()
 	defer conn.Close()
+
 	_, err = fmt.Fprintf(conn, `{"id":%q,"cmd":"worker"}`, connId)
 	if err != nil {
 		log.Error("pangolin-agent: report connection failed, ", err)
 		return err
-	} else {
-		log.Debug("pangolin-agent: new connection establisthed")
 	}
+
+	log.Debug("pangolin-agent: new connection establisthed")
+
 	go io.Copy(backend, conn)
 	_, err = io.Copy(conn, backend)
 	log.Debug(err)
-	return nil
+	return err
 }

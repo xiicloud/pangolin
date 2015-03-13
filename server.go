@@ -3,7 +3,9 @@ package pangolin
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,43 +78,59 @@ func (hub *Hub) ListenAndServe(addr string) error {
 			return err
 		}
 		tempDelay = 0
-
-		go func(hub *Hub, conn net.Conn) {
-			msg := make(map[string]string)
-			err := json.NewDecoder(conn).Decode(&msg)
-			if err != nil {
-				log.Error("pangolin: ", err)
-				return
-			}
-			log.Debug("pangolin: got message ", msg)
-
-			id, ok := msg["id"]
-			if !ok {
-				log.Error("pangolin: malformed frame. id is missing")
-				return
-			}
-
-			switch msg["cmd"] {
-			case "join":
-				hub.addAgentConn(id, conn)
-			case "worker":
-				hub.addWorkerConn(id, conn)
-			case "ping":
-				log.Debug("pangolin: ping from ", id)
-			case "error":
-				log.Error("pangolin: error occured, ", msg["message"])
-			default:
-				log.Error("pangolin: malformed frame. cmd is missing")
-				return
-			}
-
-			// Don't close the conn!!!
-		}(hub, conn)
+		go hub.Handle(conn)
 	}
 	return nil
 }
 
-func (hub *Hub) addAgentConn(id string, conn net.Conn) {
+func (hub *Hub) Handle(conn net.Conn) {
+	msg := make(map[string]string)
+	err := json.NewDecoder(conn).Decode(&msg)
+	if err != nil {
+		conn.Close()
+		log.Error("pangolin: ", err)
+		return
+	}
+	log.Debug("pangolin: got message ", msg)
+	id, ok := msg["id"]
+	if !ok {
+		log.Error("pangolin: malformed frame. id is missing")
+		return
+	}
+
+	switch msg["cmd"] {
+	case "join":
+		hub.AddAgentConn(id, conn)
+	case "worker":
+		hub.AddWorkerConn(id, conn)
+	case "ping":
+		log.Debug("pangolin: ping from ", id)
+	case "error":
+		log.Error("pangolin: error occured, ", msg["message"])
+	default:
+		log.Error("pangolin: malformed frame. cmd is missing")
+		return
+	}
+}
+
+// Let the server reuse the HTTP port.
+func (hub *Hub) HijackHTTP(w http.ResponseWriter, r *http.Request) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		w.WriteHeader(500)
+		return
+	}
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		w.WriteHeader(400)
+		return
+	}
+
+	fmt.Fprintf(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: text/raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+	hub.Handle(conn)
+}
+
+func (hub *Hub) AddAgentConn(id string, conn net.Conn) {
 	log.Debug("pangolin: add agent ", id)
 	hub.agentsLock.Lock()
 	defer hub.agentsLock.Unlock()
@@ -135,7 +153,8 @@ func (hub *Hub) CloseAgent(id string) error {
 	return nil
 }
 
-func (hub *Hub) addWorkerConn(id string, conn net.Conn) {
+func (hub *Hub) AddWorkerConn(id string, conn net.Conn) {
+	log.Debug("pangolin: AddWorkerConn ", id)
 	hub.workerLock.Lock()
 	defer hub.workerLock.Unlock()
 	_, ok := hub.workerConnectsions[id]
