@@ -315,10 +315,6 @@ type Conn struct {
 	net.Conn
 }
 
-func (conn *Conn) Close() error {
-	return conn.hub.CloseWorker(conn.id)
-}
-
 func (conn *Conn) LocalAddr() net.Addr {
 	return Addr{Id: conn.id}
 }
