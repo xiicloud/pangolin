@@ -138,12 +138,12 @@ func (self *Agent) newConn() (conn net.Conn, err error) {
 }
 
 func (self *Agent) proxy(backend net.Conn, connId string) error {
+	defer backend.Close()
 	conn, err := self.newConn()
 	if err != nil {
 		log.Error("pangolin-agent: connection to controller failed: ", err)
 		return err
 	}
-	defer backend.Close()
 	defer conn.Close()
 
 	_, err = fmt.Fprintf(conn, `{"id":%q,"cmd":"worker"}`, connId)
@@ -156,6 +156,5 @@ func (self *Agent) proxy(backend net.Conn, connId string) error {
 
 	go io.Copy(backend, conn)
 	_, err = io.Copy(conn, backend)
-	log.Debug(err)
 	return err
 }

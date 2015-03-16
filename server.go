@@ -251,6 +251,8 @@ func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Du
 		ConnId: connId,
 		Cmd:    "new_conn",
 	}
+	hub.addPendingWorker(connId)
+	defer hub.removePendingWorker(connId)
 	err := json.NewEncoder(agentConn).Encode(cmd)
 	if err != nil {
 		return nil, err
@@ -262,8 +264,6 @@ func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Du
 		timer    = time.NewTimer(timeout)
 	)
 	defer timer.Stop()
-	hub.addPendingWorker(connId)
-	defer hub.removePendingWorker(connId)
 	go func() {
 		<-timer.C
 		atomic.StoreInt32(&timedOut, 1)
@@ -292,31 +292,16 @@ func (hub *Hub) Dial(_, addr string) (net.Conn, error) {
 			Err:  errors.New("agent is not connected to the cluster")}
 	}
 
-	conn := &Conn{
-		id:  hub.idGen.Generate(),
-		hub: hub,
-	}
-	netConn, err := hub.NewWorkerConn(agentConn, conn.id, DefaultDialTimeout)
+	id := hub.idGen.Generate()
+	netConn, err := hub.NewWorkerConn(agentConn, id, DefaultDialTimeout)
 	if err != nil {
 		return nil, err
 	}
-	conn.Conn = netConn
-	return conn, nil
+	return netConn, nil
 }
 
 func (hub *Hub) DialTimeout(network, addr string, _ time.Duration) (net.Conn, error) {
 	return hub.Dial(network, addr)
-}
-
-// Implement net.Conn interface.
-type Conn struct {
-	hub *Hub
-	id  string
-	net.Conn
-}
-
-func (conn *Conn) LocalAddr() net.Addr {
-	return Addr{Id: conn.id}
 }
 
 // Implement net.Addr interface.
