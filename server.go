@@ -30,6 +30,8 @@ type Command struct {
 	Args   []interface{}
 }
 
+type newAgentCallback func(agentId string)
+
 type Hub struct {
 	idGen IdGenerator
 
@@ -51,7 +53,8 @@ type Hub struct {
 	pendingWorkers map[string]struct{}
 	pendingLock    sync.RWMutex
 
-	auth Authenticator
+	auth             Authenticator
+	newAgentCallback newAgentCallback
 }
 
 func NewHub(auth Authenticator) *Hub {
@@ -160,6 +163,10 @@ func (hub *Hub) HijackHTTP(w http.ResponseWriter, r *http.Request) {
 	hub.Handle(conn)
 }
 
+func (hub *Hub) SetNewAgentCallback(callback newAgentCallback) {
+	hub.newAgentCallback = callback
+}
+
 func (hub *Hub) AddAgentConn(id string, conn net.Conn) {
 	log.Debug("pangolin: add agent ", id)
 	hub.agentsLock.Lock()
@@ -170,6 +177,9 @@ func (hub *Hub) AddAgentConn(id string, conn net.Conn) {
 		oldConn.Close()
 	}
 	hub.onlineAgents[id] = conn
+	if hub.newAgentCallback != nil {
+		hub.newAgentCallback(id)
+	}
 }
 
 func (hub *Hub) CloseAgent(id string) error {
