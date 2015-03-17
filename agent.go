@@ -8,10 +8,15 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"sync"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
 )
+
+type ConnectionHandler interface {
+	Handle(net.Conn) error
+}
 
 type Agent struct {
 	peerUrl    *url.URL
@@ -22,10 +27,12 @@ type Agent struct {
 	enc        *json.Encoder
 	tlsConfig  *tls.Config
 	auth       Authenticator
+	handler    ConnectionHandler
 }
 
 var (
 	ErrUnsupportedProtocol = errors.New("protocol not supported")
+	ErrClosed              = errors.New("connection closed")
 )
 
 func NewAgent(id, peerAddr, serviceAddr string, tlsConfig *tls.Config, auth Authenticator) (*Agent, error) {
@@ -50,13 +57,15 @@ func NewAgent(id, peerAddr, serviceAddr string, tlsConfig *tls.Config, auth Auth
 		return nil, ErrUnsupportedProtocol
 	}
 
-	return &Agent{
+	agent := &Agent{
 		peerUrl:    peerUrl,
 		serviceUrl: serviceUrl,
 		id:         id,
 		tlsConfig:  tlsConfig,
 		auth:       auth,
-	}, nil
+	}
+	agent.handler = agent
+	return agent, nil
 }
 
 func (self *Agent) dial(addr *url.URL) (net.Conn, error) {
@@ -105,13 +114,10 @@ func (self *Agent) Serve() error {
 		log.Debug("pangolin-agent: got command ", msg)
 		switch msg["Cmd"] {
 		case "new_conn":
-			backend, err := self.dial(self.serviceUrl)
-			if err != nil {
-				log.Error("pangolin-agent: backend connection failed: ", err)
-				self.reportError(err.Error())
-				continue
+			workerConn, err := self.createWorker(msg["ConnId"])
+			if err == nil {
+				go self.handler.Handle(workerConn)
 			}
-			go self.proxy(backend, msg["ConnId"])
 		}
 	}
 }
@@ -137,24 +143,85 @@ func (self *Agent) newConn() (conn net.Conn, err error) {
 	return
 }
 
-func (self *Agent) proxy(backend net.Conn, connId string) error {
-	defer backend.Close()
+func (self *Agent) createWorker(connId string) (net.Conn, error) {
 	conn, err := self.newConn()
 	if err != nil {
 		log.Error("pangolin-agent: connection to controller failed: ", err)
-		return err
+		return nil, err
 	}
-	defer conn.Close()
 
 	_, err = fmt.Fprintf(conn, `{"id":%q,"cmd":"worker"}`, connId)
 	if err != nil {
 		log.Error("pangolin-agent: report connection failed, ", err)
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (self *Agent) Handle(conn net.Conn) error {
+	defer conn.Close()
+	backend, err := self.dial(self.serviceUrl)
+	if err != nil {
+		log.Error("pangolin-agent: backend connection failed: ", err)
+		self.reportError(err.Error())
 		return err
 	}
+	defer backend.Close()
 
 	log.Debug("pangolin-agent: new connection establisthed")
 
 	go io.Copy(backend, conn)
 	_, err = io.Copy(conn, backend)
 	return err
+}
+
+func (self *Agent) NewListener() (net.Listener, error) {
+	listener := &AgentListener{
+		agent:   self,
+		workers: make(chan net.Conn, 100),
+	}
+	self.handler = listener
+	return listener, nil
+}
+
+type AgentListener struct {
+	agent   *Agent
+	workers chan net.Conn
+	closed  bool
+	lock    sync.RWMutex
+	once    sync.Once
+}
+
+func (self *AgentListener) Accept() (net.Conn, error) {
+	conn, ok := <-self.workers
+	if ok {
+		return conn, nil
+	}
+	return nil, ErrClosed
+}
+
+func (self *AgentListener) Close() error {
+	self.once.Do(func() {
+		self.lock.Lock()
+		defer self.lock.Unlock()
+		close(self.workers)
+		self.closed = true
+		self.agent.conn.Close()
+	})
+	return nil
+}
+
+func (self *AgentListener) Addr() net.Addr {
+	return self.agent.conn.LocalAddr()
+}
+
+func (self *AgentListener) Handle(conn net.Conn) error {
+	self.lock.RLock()
+	defer self.lock.RUnlock()
+	if self.closed {
+		return ErrClosed
+	} else {
+		self.workers <- conn
+		return nil
+	}
 }
