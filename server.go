@@ -271,11 +271,9 @@ func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Du
 	var (
 		timedOut int32
 		conn     net.Conn
-		timer    = time.NewTimer(timeout)
 	)
-	defer timer.Stop()
 	go func() {
-		<-timer.C
+		<-time.After(timeout)
 		atomic.StoreInt32(&timedOut, 1)
 	}()
 
