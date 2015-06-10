@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
@@ -269,21 +268,23 @@ func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Du
 	}
 
 	var (
-		timedOut int32
-		conn     net.Conn
+		conn net.Conn
+		ch   = time.After(timeout)
 	)
-	go func() {
-		<-time.After(timeout)
-		atomic.StoreInt32(&timedOut, 1)
-	}()
 
-	for atomic.LoadInt32(&timedOut) == 0 {
-		conn = hub.GetWorkerConn(connId)
-		if conn != nil {
-			hub.workerLock.Lock()
-			delete(hub.workerConnections, connId)
-			hub.workerLock.Unlock()
-			return conn, nil
+	for {
+		select {
+		case <-ch:
+			break
+		default:
+			conn = hub.GetWorkerConn(connId)
+			if conn != nil {
+				hub.workerLock.Lock()
+				delete(hub.workerConnections, connId)
+				hub.workerLock.Unlock()
+				return conn, nil
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
 	return nil, errors.New("pangolin: timeout occured")
