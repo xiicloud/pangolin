@@ -128,6 +128,7 @@ func (hub *Hub) Handle(conn net.Conn) {
 	log.Debug("pangolin: got message ", msg)
 	id, ok := msg["id"]
 	if !ok {
+		conn.Close()
 		log.Error("pangolin: malformed frame. id is missing")
 		return
 	}
@@ -138,8 +139,10 @@ func (hub *Hub) Handle(conn net.Conn) {
 	case "worker":
 		hub.AddWorkerConn(id, conn)
 	case "error":
+		conn.Close()
 		log.Error("pangolin: error occured, ", msg["message"])
 	default:
+		conn.Close()
 		log.Error("pangolin: malformed frame. cmd is missing")
 		return
 	}
