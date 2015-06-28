@@ -170,9 +170,16 @@ func (self *Agent) Handle(conn net.Conn) error {
 
 	log.Debug("pangolin-agent: new connection establisthed")
 
-	go io.Copy(backend, conn)
-	_, err = io.Copy(conn, backend)
-	return err
+	ch := make(chan error)
+	cp := func(dst io.Writer, src io.Reader) {
+		_, err := io.Copy(dst, src)
+		ch <- err
+	}
+	go cp(backend, conn)
+	go cp(conn, backend)
+
+	<-ch
+	return <-ch
 }
 
 func (self *Agent) NewListener() (net.Listener, error) {
