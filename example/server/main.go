@@ -24,16 +24,18 @@ func main() {
 		},
 	}
 
-	time.Sleep(time.Second * 5)
-	resp, err := client.Get("http://node1/info")
-	if err != nil {
-		log.Error("http get: ", err)
-	} else {
-		d, err := httputil.DumpResponse(resp, true)
-		fmt.Println(string(d), err)
+	for {
+		time.Sleep(time.Second * 1)
+		resp, err := client.Get("http://node1/info")
+		if err != nil {
+			log.Error("http get: ", err)
+		} else {
+			d, err := httputil.DumpResponse(resp, true)
+			fmt.Println(string(d), err)
+		}
 	}
 
-	err = <-ech
+	err := <-ech
 	if err != nil {
 		log.Fatal("server: ", err)
 	}

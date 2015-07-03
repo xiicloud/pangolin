@@ -1,7 +1,6 @@
 package pangolin
 
 import (
-	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -22,12 +21,6 @@ type Authenticator interface {
 	Token() string
 }
 
-type Command struct {
-	ConnId string
-	Cmd    string
-	Args   []interface{}
-}
-
 type newAgentCallback func(agentId string)
 
 type workerConn struct {
@@ -37,17 +30,18 @@ type workerConn struct {
 
 type agentConn struct {
 	net.Conn
-	enc  *json.Encoder
+	p    Protocol
 	lock sync.Mutex
 }
 
-func (ac *agentConn) sendCmd(cmd Command) error {
+func (ac *agentConn) requestConn(id uint32) error {
 	ac.lock.Lock()
 	defer ac.lock.Unlock()
-	return ac.enc.Encode(cmd)
+	return ac.p.NewWorker(ac, id)
 }
 
 type Hub struct {
+	p     Protocol
 	idGen IdGenerator
 
 	// The connections that issued by agent and are used for transporting instructions.
@@ -61,11 +55,11 @@ type Hub struct {
 	// A new connection is created by the agent once it receives the "new_connection" instruction.
 	// The connection is closed when the RPC call is finished.
 	// The key of the map is the ID that the "new_connection" command had specified.
-	workerConnections map[string]*workerConn
+	workerConnections map[uint32]*workerConn
 	workerLock        sync.RWMutex
 
 	// A guard to ensure only connections issued from the Dial method are accepted.
-	pendingWorkers map[string]struct{}
+	pendingWorkers map[uint32]struct{}
 	pendingLock    sync.RWMutex
 
 	auth             Authenticator
@@ -74,11 +68,12 @@ type Hub struct {
 
 func NewHub(auth Authenticator) *Hub {
 	hub := &Hub{
-		idGen:             newIdGenerator("cmd"),
+		idGen:             newIdGenerator(),
 		onlineAgents:      make(map[string]*agentConn),
-		workerConnections: make(map[string]*workerConn),
-		pendingWorkers:    make(map[string]struct{}),
+		workerConnections: make(map[uint32]*workerConn),
+		pendingWorkers:    make(map[uint32]struct{}),
 		auth:              auth,
+		p:                 Protocol{auth: auth},
 	}
 	go hub.gc()
 	return hub
@@ -118,51 +113,28 @@ func (hub *Hub) ListenAndServe(addr string) error {
 }
 
 func (hub *Hub) Handle(conn net.Conn) {
-	dec := json.NewDecoder(conn)
-	if hub.auth != nil {
-		credentials := make(map[string]string)
-		err := dec.Decode(&credentials)
-		if err != nil {
-			log.Error("pangolin: json ", err)
-			conn.Close()
-			return
-		}
-
-		err = hub.auth.Auth(credentials["id"], credentials["token"])
-		if err != nil {
-			log.Error("pangolin: auth failed ", err)
-			conn.Close()
-			return
-		}
-	}
-
-	msg := make(map[string]string)
-	err := dec.Decode(&msg)
+	cmd, err := hub.p.GetCmd(conn)
 	if err != nil {
-		conn.Close()
 		log.Error("pangolin: ", err)
+		conn.Close()
 		return
 	}
-	log.Debug("pangolin: got message ", msg)
-	id, ok := msg["id"]
-	if !ok {
-		conn.Close()
-		log.Error("pangolin: malformed frame. id is missing")
+	log.Debugf("pangolin: got command %d", cmd)
+
+	if cmd == CmdJoin {
+		agentId, err := hub.p.GetAgentId(conn)
+		if err != nil {
+			log.Error("pangolin: CmdJoin ", err)
+			conn.Close()
+		}
+		hub.AddAgentConn(agentId, conn)
 		return
 	}
 
-	switch msg["cmd"] {
-	case "join":
-		hub.AddAgentConn(id, conn)
-	case "worker":
-		hub.AddWorkerConn(id, conn)
-	case "error":
+	if cmd >= MinRequestId {
+		hub.AddWorkerConn(uint32(cmd), conn)
+	} else {
 		conn.Close()
-		log.Error("pangolin: error occured, ", msg["message"])
-	default:
-		conn.Close()
-		log.Error("pangolin: malformed frame. cmd is missing")
-		return
 	}
 }
 
@@ -199,7 +171,7 @@ func (hub *Hub) AddAgentConn(id string, conn net.Conn) {
 		// close the stale connection
 		oldConn.Close()
 	}
-	hub.onlineAgents[id] = &agentConn{Conn: conn, enc: json.NewEncoder(conn)}
+	hub.onlineAgents[id] = &agentConn{Conn: conn, p: hub.p}
 	if hub.newAgentCallback != nil {
 		hub.newAgentCallback(id)
 	}
@@ -226,7 +198,7 @@ func (hub *Hub) OnlineAgents() map[string]string {
 	return agents
 }
 
-func (hub *Hub) AddWorkerConn(id string, conn net.Conn) {
+func (hub *Hub) AddWorkerConn(id uint32, conn net.Conn) {
 	log.Debug("pangolin: AddWorkerConn ", id)
 
 	// Close unexpected connection.
@@ -261,7 +233,7 @@ func (hub *Hub) gc() {
 	}
 }
 
-func (hub *Hub) CloseWorker(id string) error {
+func (hub *Hub) CloseWorker(id uint32) error {
 	hub.workerLock.Lock()
 	defer hub.workerLock.Unlock()
 	conn, ok := hub.workerConnections[id]
@@ -272,7 +244,7 @@ func (hub *Hub) CloseWorker(id string) error {
 	return nil
 }
 
-func (hub *Hub) GetWorkerConn(id string) *workerConn {
+func (hub *Hub) GetWorkerConn(id uint32) *workerConn {
 	hub.workerLock.Lock()
 	defer hub.workerLock.Unlock()
 	if conn, ok := hub.workerConnections[id]; ok {
@@ -288,34 +260,29 @@ func (hub *Hub) GetAgentConn(id string) *agentConn {
 	return hub.onlineAgents[id]
 }
 
-func (hub *Hub) addPendingWorker(id string) {
+func (hub *Hub) addPendingWorker(id uint32) {
 	hub.pendingLock.Lock()
 	hub.pendingWorkers[id] = struct{}{}
 	hub.pendingLock.Unlock()
 }
 
-func (hub *Hub) removePendingWorker(id string) {
+func (hub *Hub) removePendingWorker(id uint32) {
 	hub.pendingLock.Lock()
 	delete(hub.pendingWorkers, id)
 	hub.pendingLock.Unlock()
 }
 
-func (hub *Hub) hasPendingWorker(id string) bool {
+func (hub *Hub) hasPendingWorker(id uint32) bool {
 	hub.pendingLock.RLock()
 	defer hub.pendingLock.RUnlock()
 	_, ok := hub.pendingWorkers[id]
 	return ok
 }
 
-func (hub *Hub) NewWorkerConn(ac *agentConn, connId string, timeout time.Duration) (net.Conn, error) {
-	cmd := Command{
-		ConnId: connId,
-		Cmd:    "new_conn",
-	}
+func (hub *Hub) NewWorkerConn(ac *agentConn, connId uint32, timeout time.Duration) (net.Conn, error) {
 	hub.addPendingWorker(connId)
 	defer hub.removePendingWorker(connId)
-
-	if err := ac.sendCmd(cmd); err != nil {
+	if err := ac.requestConn(connId); err != nil {
 		return nil, err
 	}
 

@@ -2,7 +2,6 @@ package pangolin
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -22,11 +21,11 @@ type Agent struct {
 	serviceUrl *url.URL
 	id         string
 	conn       net.Conn
-	dec        *json.Decoder
-	enc        *json.Encoder
 	tlsConfig  *tls.Config
 	auth       Authenticator
 	handler    ConnectionHandler
+	cmdLock    sync.Mutex
+	p          Protocol
 }
 
 var (
@@ -62,6 +61,7 @@ func NewAgent(id, peerAddr, serviceAddr string, tlsConfig *tls.Config, auth Auth
 		id:         id,
 		tlsConfig:  tlsConfig,
 		auth:       auth,
+		p:          Protocol{auth: auth},
 	}
 	agent.handler = agent
 	return agent, nil
@@ -88,19 +88,13 @@ func (self *Agent) Join() error {
 	if err != nil {
 		return err
 	}
-	self.conn = conn
 
-	msg := map[string]string{
-		"id":  self.id,
-		"cmd": "join",
-	}
-	self.enc = json.NewEncoder(conn)
-	self.dec = json.NewDecoder(conn)
-	err = self.enc.Encode(msg)
+	err = self.p.Join(conn, []byte(self.id))
 	if err != nil {
 		conn.Close()
 		return err
 	}
+	self.conn = conn
 	conn.SetReadDeadline(time.Time{})
 	return nil
 }
@@ -108,29 +102,25 @@ func (self *Agent) Join() error {
 func (self *Agent) Serve() error {
 	defer self.conn.Close()
 	for {
-		msg := make(map[string]string)
-		err := self.dec.Decode(&msg)
-		if err != nil {
-			log.Error("pangolin-agent: json error: ", err)
+		reqId, err := self.p.GetCmd(self.conn)
+		if err == io.EOF {
+			log.Error("pangolin-agent: command tunnel closed")
 			return err
 		}
-		log.Debug("pangolin-agent: got command ", msg)
-		switch msg["Cmd"] {
-		case "new_conn":
-			workerConn, err := self.createWorker(msg["ConnId"])
-			if err == nil {
-				go self.handler.Handle(workerConn)
-			}
+
+		if err != nil {
+			log.Error("pangolin-agent: ", err)
+			return err
+		}
+
+		workerConn, err := self.createWorker(uint32(reqId))
+		if err == nil {
+			go self.handler.Handle(workerConn)
+		} else {
+			log.Error("pangolin-agent: ", err)
 		}
 	}
-}
-
-func (self *Agent) reportError(msg string) {
-	self.enc.Encode(map[string]string{
-		"id":      self.id,
-		"message": msg,
-		"cmd":     "error",
-	})
+	return nil
 }
 
 func (self *Agent) newConn(keepalive bool) (conn net.Conn, err error) {
@@ -140,23 +130,20 @@ func (self *Agent) newConn(keepalive bool) (conn net.Conn, err error) {
 		conn, err = self.dial(self.peerUrl)
 	}
 
-	if err == nil && self.auth != nil {
-		auth := map[string]string{"id": self.id, "token": self.auth.Token()}
-		json.NewEncoder(conn).Encode(auth)
-	}
 	return
 }
 
-func (self *Agent) createWorker(connId string) (net.Conn, error) {
+func (self *Agent) createWorker(connId uint32) (net.Conn, error) {
 	conn, err := self.newConn(false)
 	if err != nil {
 		log.Error("pangolin-agent: connection to controller failed: ", err)
 		return nil, err
 	}
 
-	msg := map[string]string{"id": connId, "cmd": "worker"}
-	if err := json.NewEncoder(conn).Encode(msg); err != nil {
+	err = self.p.NewWorker(conn, connId)
+	if err != nil {
 		log.Error("pangolin-agent: report connection failed, ", err)
+		conn.Close()
 		return nil, err
 	}
 	return conn, nil
@@ -167,7 +154,6 @@ func (self *Agent) Handle(conn net.Conn) error {
 	backend, err := self.dial(self.serviceUrl)
 	if err != nil {
 		log.Error("pangolin-agent: backend connection failed: ", err)
-		self.reportError(err.Error())
 		return err
 	}
 	defer backend.Close()

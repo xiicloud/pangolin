@@ -1,41 +1,29 @@
 package pangolin
 
 import (
-	"fmt"
 	"math"
-	"os"
 )
 
 type IdGenerator interface {
-	Generate() string
+	Generate() uint32
 }
 
 type idGenerator struct {
-	prefix   string
-	pid      int
-	hostname string
-	seq      chan uint32
+	seq chan uint32
 }
 
-func newIdGenerator(prefix string) IdGenerator {
-	var err error
+func newIdGenerator() IdGenerator {
 	g := &idGenerator{
-		pid:    os.Getpid(),
-		prefix: prefix,
-		seq:    make(chan uint32),
-	}
-	g.hostname, err = os.Hostname()
-	if err != nil {
-		g.hostname = "csphere-controller"
+		seq: make(chan uint32),
 	}
 
 	go func(g *idGenerator) {
-		var seq uint32 = 1
+		var seq uint32 = MinRequestId
 		for {
 			g.seq <- seq
 			seq++
 			if seq >= math.MaxUint32 {
-				seq = 1
+				seq = MinRequestId
 			}
 		}
 	}(g)
@@ -43,6 +31,6 @@ func newIdGenerator(prefix string) IdGenerator {
 	return g
 }
 
-func (self *idGenerator) Generate() string {
-	return fmt.Sprintf("%s:%d:%d", self.hostname, self.pid, <-self.seq)
+func (self *idGenerator) Generate() uint32 {
+	return <-self.seq
 }
