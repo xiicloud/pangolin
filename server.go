@@ -31,16 +31,9 @@ type Command struct {
 
 type newAgentCallback func(agentId string)
 
-type agentConn struct {
+type workerConn struct {
 	net.Conn
-	enc  *json.Encoder
-	lock sync.Mutex
-}
-
-func (ac *agentConn) sentCmd(cmd Command) error {
-	ac.lock.Lock()
-	defer ac.lock.Unlock()
-	return ac.enc.Encode(cmd)
+	expires time.Time
 }
 
 type Hub struct {
@@ -50,14 +43,14 @@ type Hub struct {
 	// When an agent joins to the controller, it issues a persistent connection to
 	// the controller to wait for instructions such as "new_connection".
 	// The key of the map is the ID of the request.
-	onlineAgents map[string]*agentConn
+	onlineAgents map[string]net.Conn
 	agentsLock   sync.RWMutex
 
 	// The network connections issued by agent.
 	// A new connection is created by the agent once it receives the "new_connection" instruction.
 	// The connection is closed when the RPC call is finished.
 	// The key of the map is the ID that the "new_connection" command had specified.
-	workerConnections map[string]net.Conn
+	workerConnections map[string]*workerConn
 	workerLock        sync.RWMutex
 
 	// A guard to ensure only connections issued from the Dial method are accepted.
@@ -69,13 +62,15 @@ type Hub struct {
 }
 
 func NewHub(auth Authenticator) *Hub {
-	return &Hub{
+	hub := &Hub{
 		idGen:             newIdGenerator("cmd"),
-		onlineAgents:      make(map[string]*agentConn),
-		workerConnections: make(map[string]net.Conn),
+		onlineAgents:      make(map[string]net.Conn),
+		workerConnections: make(map[string]*workerConn),
 		pendingWorkers:    make(map[string]struct{}),
 		auth:              auth,
 	}
+	go hub.gc()
+	return hub
 }
 
 func (hub *Hub) ListenAndServe(addr string) error {
@@ -190,7 +185,7 @@ func (hub *Hub) AddAgentConn(id string, conn net.Conn) {
 		// close the stale connection
 		oldConn.Close()
 	}
-	hub.onlineAgents[id] = &agentConn{Conn: conn, enc: json.NewEncoder(conn)}
+	hub.onlineAgents[id] = conn
 	if hub.newAgentCallback != nil {
 		hub.newAgentCallback(id)
 	}
@@ -205,6 +200,16 @@ func (hub *Hub) CloseAgent(id string) error {
 		return conn.Close()
 	}
 	return nil
+}
+
+func (hub *Hub) OnlineAgents() map[string]string {
+	agents := make(map[string]string)
+	hub.agentsLock.RLock()
+	defer hub.agentsLock.RUnlock()
+	for id, conn := range hub.onlineAgents {
+		agents[id] = conn.RemoteAddr().String()
+	}
+	return agents
 }
 
 func (hub *Hub) AddWorkerConn(id string, conn net.Conn) {
@@ -225,7 +230,21 @@ func (hub *Hub) AddWorkerConn(id string, conn net.Conn) {
 		conn.Close()
 		return
 	}
-	hub.workerConnections[id] = conn
+	hub.workerConnections[id] = &workerConn{Conn: conn, expires: time.Now().Add(DefaultDialTimeout)}
+}
+
+// Ensure the connection is closed if no consumer pick it up.
+func (hub *Hub) gc() {
+	for range time.Tick(DefaultDialTimeout) {
+		hub.workerLock.Lock()
+		for id, worker := range hub.workerConnections {
+			if worker.expires.Before(time.Now()) {
+				delete(hub.workerConnections, id)
+				worker.Close()
+			}
+		}
+		hub.workerLock.Unlock()
+	}
 }
 
 func (hub *Hub) CloseWorker(id string) error {
@@ -239,13 +258,17 @@ func (hub *Hub) CloseWorker(id string) error {
 	return nil
 }
 
-func (hub *Hub) GetWorkerConn(id string) net.Conn {
-	hub.workerLock.RLock()
-	defer hub.workerLock.RUnlock()
-	return hub.workerConnections[id]
+func (hub *Hub) GetWorkerConn(id string) *workerConn {
+	hub.workerLock.Lock()
+	defer hub.workerLock.Unlock()
+	if conn, ok := hub.workerConnections[id]; ok {
+		delete(hub.workerConnections, id)
+		return conn
+	}
+	return nil
 }
 
-func (hub *Hub) GetAgentConn(id string) *agentConn {
+func (hub *Hub) GetAgentConn(id string) net.Conn {
 	hub.agentsLock.RLock()
 	defer hub.agentsLock.RUnlock()
 	return hub.onlineAgents[id]
@@ -270,19 +293,20 @@ func (hub *Hub) hasPendingWorker(id string) bool {
 	return ok
 }
 
-func (hub *Hub) NewWorkerConn(ac *agentConn, connId string, timeout time.Duration) (net.Conn, error) {
+func (hub *Hub) NewWorkerConn(agentConn net.Conn, connId string, timeout time.Duration) (net.Conn, error) {
 	cmd := Command{
 		ConnId: connId,
 		Cmd:    "new_conn",
 	}
 	hub.addPendingWorker(connId)
 	defer hub.removePendingWorker(connId)
-	if err := ac.sentCmd(cmd); err != nil {
+	err := json.NewEncoder(agentConn).Encode(cmd)
+	if err != nil {
 		return nil, err
 	}
 
 	var (
-		conn net.Conn
+		conn *workerConn
 		ch   = time.After(timeout)
 	)
 
@@ -293,10 +317,7 @@ func (hub *Hub) NewWorkerConn(ac *agentConn, connId string, timeout time.Duratio
 		default:
 			conn = hub.GetWorkerConn(connId)
 			if conn != nil {
-				hub.workerLock.Lock()
-				delete(hub.workerConnections, connId)
-				hub.workerLock.Unlock()
-				return conn, nil
+				return conn.Conn, nil
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -306,8 +327,8 @@ func (hub *Hub) NewWorkerConn(ac *agentConn, connId string, timeout time.Duratio
 
 // addr must be the ID of the agent.
 func (hub *Hub) Dial(_, addr string) (net.Conn, error) {
-	ac := hub.GetAgentConn(strings.Split(addr, ":")[0])
-	if ac == nil {
+	agentConn := hub.GetAgentConn(strings.Split(addr, ":")[0])
+	if agentConn == nil {
 		return nil, &net.OpError{
 			Op:   "dial",
 			Net:  "tcp",
@@ -316,7 +337,7 @@ func (hub *Hub) Dial(_, addr string) (net.Conn, error) {
 	}
 
 	id := hub.idGen.Generate()
-	netConn, err := hub.NewWorkerConn(ac, id, DefaultDialTimeout)
+	netConn, err := hub.NewWorkerConn(agentConn, id, DefaultDialTimeout)
 	if err != nil {
 		return nil, err
 	}
