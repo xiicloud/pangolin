@@ -224,11 +224,13 @@ func (self *AgentListener) Addr() net.Addr {
 
 func (self *AgentListener) Handle(conn net.Conn) error {
 	self.lock.RLock()
-	defer self.lock.RUnlock()
 	if self.closed {
+		self.lock.RUnlock()
+		conn.Close()
 		return ErrClosed
-	} else {
-		self.workers <- conn
-		return nil
 	}
+	self.lock.RUnlock()
+
+	self.workers <- conn
+	return nil
 }
