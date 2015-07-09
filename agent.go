@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/url"
@@ -98,8 +97,12 @@ func (self *Agent) Join() error {
 	self.enc = json.NewEncoder(conn)
 	self.dec = json.NewDecoder(conn)
 	err = self.enc.Encode(msg)
+	if err != nil {
+		conn.Close()
+		return err
+	}
 	conn.SetReadDeadline(time.Time{})
-	return err
+	return nil
 }
 
 func (self *Agent) Serve() error {
@@ -138,7 +141,8 @@ func (self *Agent) newConn() (conn net.Conn, err error) {
 	}
 
 	if err == nil && self.auth != nil {
-		fmt.Fprintf(conn, `{"id":%q,"token":%q}`, self.id, self.auth.Token())
+		auth := map[string]string{"id": self.id, "token": self.auth.Token()}
+		json.NewEncoder(conn).Encode(auth)
 	}
 	return
 }
@@ -150,8 +154,8 @@ func (self *Agent) createWorker(connId string) (net.Conn, error) {
 		return nil, err
 	}
 
-	_, err = fmt.Fprintf(conn, `{"id":%q,"cmd":"worker"}`, connId)
-	if err != nil {
+	msg := map[string]string{"id": connId, "cmd": "worker"}
+	if err := json.NewEncoder(conn).Encode(msg); err != nil {
 		log.Error("pangolin-agent: report connection failed, ", err)
 		return nil, err
 	}
