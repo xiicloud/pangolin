@@ -3,7 +3,6 @@ package pangolin
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -179,8 +178,11 @@ func (hub *Hub) HijackHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		return
 	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(false)
+	}
 
-	fmt.Fprintf(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: text/raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+	conn.Write([]byte("HTTP/1.1 101 UPGRADED\r\nContent-Type: text/raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n"))
 	hub.Handle(conn)
 }
 

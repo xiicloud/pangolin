@@ -83,7 +83,7 @@ func (self *Agent) dial(addr *url.URL) (net.Conn, error) {
 }
 
 func (self *Agent) Join() error {
-	conn, err := self.newConn()
+	conn, err := self.newConn(true)
 
 	if err != nil {
 		return err
@@ -133,9 +133,9 @@ func (self *Agent) reportError(msg string) {
 	})
 }
 
-func (self *Agent) newConn() (conn net.Conn, err error) {
+func (self *Agent) newConn(keepalive bool) (conn net.Conn, err error) {
 	if self.peerUrl.Scheme == "http" || self.peerUrl.Scheme == "https" {
-		conn, err = self.HijackHTTP()
+		conn, err = self.HijackHTTP(keepalive)
 	} else {
 		conn, err = self.dial(self.peerUrl)
 	}
@@ -148,7 +148,7 @@ func (self *Agent) newConn() (conn net.Conn, err error) {
 }
 
 func (self *Agent) createWorker(connId string) (net.Conn, error) {
-	conn, err := self.newConn()
+	conn, err := self.newConn(false)
 	if err != nil {
 		log.Error("pangolin-agent: connection to controller failed: ", err)
 		return nil, err

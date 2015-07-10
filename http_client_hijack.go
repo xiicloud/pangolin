@@ -113,7 +113,7 @@ func tlsDialWithDialer(dialer *net.Dialer, network, addr string, config *tls.Con
 	return &tlsClientCon{conn, rawConn}, nil
 }
 
-func (self *Agent) HijackHTTP() (net.Conn, error) {
+func (self *Agent) HijackHTTP(keepalive bool) (net.Conn, error) {
 	url := self.peerUrl.String()
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -130,7 +130,7 @@ func (self *Agent) HijackHTTP() (net.Conn, error) {
 	// network setups may cause ECONNTIMEOUT, leaving the client in an unknown
 	// state. Setting TCP KeepAlive on the socket connection will prohibit
 	// ECONNTIMEOUT unless the socket connection truly is broken
-	if tcpConn, ok := dial.(*net.TCPConn); ok {
+	if tcpConn, ok := dial.(*net.TCPConn); keepalive && ok {
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
