@@ -9,9 +9,9 @@ import (
 type Command uint32
 
 const (
-	CmdJoin      = Command(1)
-	CmdWorker    = Command(2)
-	MinRequestId = 100
+	CmdJoin      = Command(128)
+	CmdWorker    = Command(129)
+	MinRequestId = 256
 )
 
 var Endian = binary.LittleEndian
