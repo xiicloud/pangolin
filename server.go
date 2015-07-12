@@ -37,7 +37,7 @@ type agentConn struct {
 func (ac *agentConn) requestConn(id uint32) error {
 	ac.lock.Lock()
 	defer ac.lock.Unlock()
-	return ac.p.NewWorker(ac, id)
+	return ac.p.NewWorker(ac, id, false)
 }
 
 type Hub struct {
@@ -113,7 +113,7 @@ func (hub *Hub) ListenAndServe(addr string) error {
 }
 
 func (hub *Hub) Handle(conn net.Conn) {
-	cmd, err := hub.p.GetCmd(conn)
+	cmd, err := hub.p.GetAgentCmd(conn)
 	if err != nil {
 		log.Error("pangolin: ", err)
 		conn.Close()
@@ -174,6 +174,10 @@ func (hub *Hub) AddAgentConn(id string, conn net.Conn) {
 	hub.onlineAgents[id] = &agentConn{Conn: conn, p: hub.p}
 	if hub.newAgentCallback != nil {
 		hub.newAgentCallback(id)
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+		tcpConn.SetKeepAlive(true)
 	}
 }
 

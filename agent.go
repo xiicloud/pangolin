@@ -96,13 +96,17 @@ func (self *Agent) Join() error {
 	}
 	self.conn = conn
 	conn.SetReadDeadline(time.Time{})
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+		tcpConn.SetKeepAlive(true)
+	}
 	return nil
 }
 
 func (self *Agent) Serve() error {
 	defer self.conn.Close()
 	for {
-		reqId, err := self.p.GetCmd(self.conn)
+		reqId, err := self.p.GetServerCmd(self.conn)
 		if err == io.EOF {
 			log.Error("pangolin-agent: command tunnel closed")
 			return err
@@ -140,7 +144,7 @@ func (self *Agent) createWorker(connId uint32) (net.Conn, error) {
 		return nil, err
 	}
 
-	err = self.p.NewWorker(conn, connId)
+	err = self.p.NewWorker(conn, connId, true)
 	if err != nil {
 		log.Error("pangolin-agent: report connection failed, ", err)
 		conn.Close()
