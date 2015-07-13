@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	log "github.com/Sirupsen/logrus"
-	"github.com/mountkin/pangolin"
+	"github.com/nicescale/pangolin"
 	"net/http"
 )
 

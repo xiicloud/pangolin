@@ -7,7 +7,7 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/mountkin/pangolin"
+	"github.com/nicescale/pangolin"
 )
 
 func main() {
