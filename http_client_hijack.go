@@ -71,10 +71,7 @@ func tlsDialWithDialer(dialer *net.Dialer, network, addr string, config *tls.Con
 	// network setups may cause ECONNTIMEOUT, leaving the client in an unknown
 	// state. Setting TCP KeepAlive on the socket connection will prohibit
 	// ECONNTIMEOUT unless the socket connection truly is broken
-	if tcpConn, ok := rawConn.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(30 * time.Second)
-	}
+	setKeepAlive(rawConn)
 
 	colonPos := strings.LastIndex(addr, ":")
 	if colonPos == -1 {
@@ -113,7 +110,7 @@ func tlsDialWithDialer(dialer *net.Dialer, network, addr string, config *tls.Con
 	return &tlsClientCon{conn, rawConn}, nil
 }
 
-func (self *Agent) HijackHTTP(keepalive bool) (net.Conn, error) {
+func (self *Agent) HijackHTTP() (net.Conn, error) {
 	url := self.peerUrl.String()
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -125,19 +122,16 @@ func (self *Agent) HijackHTTP(keepalive bool) (net.Conn, error) {
 	req.Host = self.peerUrl.Host
 
 	dial, err := self.dial(self.peerUrl)
+	if err != nil {
+		log.Error("pangolin-agent: dial failed ", err)
+		return nil, err
+	}
 	// When we set up a TCP connection for hijack, there could be long periods
 	// of inactivity (a long running command with no output) that in certain
 	// network setups may cause ECONNTIMEOUT, leaving the client in an unknown
 	// state. Setting TCP KeepAlive on the socket connection will prohibit
 	// ECONNTIMEOUT unless the socket connection truly is broken
-	if tcpConn, ok := dial.(*net.TCPConn); keepalive && ok {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(30 * time.Second)
-	}
-	if err != nil {
-		log.Error("pangolin-agent: dial failed ", err)
-		return nil, err
-	}
+	setKeepAlive(dial)
 	clientconn := httputil.NewClientConn(dial, nil)
 	// Server hijacks the connection, error 'connection closed' expected
 	clientconn.Do(req)

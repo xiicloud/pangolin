@@ -83,7 +83,7 @@ func (self *Agent) dial(addr *url.URL) (net.Conn, error) {
 }
 
 func (self *Agent) Join() error {
-	conn, err := self.newConn(true)
+	conn, err := self.newConn()
 
 	if err != nil {
 		return err
@@ -96,10 +96,7 @@ func (self *Agent) Join() error {
 	}
 	self.conn = conn
 	conn.SetReadDeadline(time.Time{})
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetNoDelay(true)
-		tcpConn.SetKeepAlive(true)
-	}
+	setKeepAlive(conn)
 	return nil
 }
 
@@ -127,9 +124,9 @@ func (self *Agent) Serve() error {
 	return nil
 }
 
-func (self *Agent) newConn(keepalive bool) (conn net.Conn, err error) {
+func (self *Agent) newConn() (conn net.Conn, err error) {
 	if self.peerUrl.Scheme == "http" || self.peerUrl.Scheme == "https" {
-		conn, err = self.HijackHTTP(keepalive)
+		conn, err = self.HijackHTTP()
 	} else {
 		conn, err = self.dial(self.peerUrl)
 	}
@@ -138,7 +135,7 @@ func (self *Agent) newConn(keepalive bool) (conn net.Conn, err error) {
 }
 
 func (self *Agent) createWorker(connId uint32) (net.Conn, error) {
-	conn, err := self.newConn(false)
+	conn, err := self.newConn()
 	if err != nil {
 		log.Error("pangolin-agent: connection to controller failed: ", err)
 		return nil, err
@@ -179,7 +176,7 @@ func (self *Agent) Handle(conn net.Conn) error {
 func (self *Agent) NewListener() (net.Listener, error) {
 	listener := &AgentListener{
 		agent:   self,
-		workers: make(chan net.Conn, 100),
+		workers: make(chan net.Conn),
 	}
 	self.handler = listener
 	return listener, nil

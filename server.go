@@ -150,9 +150,7 @@ func (hub *Hub) HijackHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		return
 	}
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlive(false)
-	}
+	setKeepAlive(conn)
 
 	conn.Write([]byte("HTTP/1.1 101 UPGRADED\r\nContent-Type: text/raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n"))
 	hub.Handle(conn)
@@ -175,10 +173,7 @@ func (hub *Hub) AddAgentConn(id string, conn net.Conn) {
 	if hub.newAgentCallback != nil {
 		hub.newAgentCallback(id)
 	}
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetNoDelay(true)
-		tcpConn.SetKeepAlive(true)
-	}
+	setKeepAlive(conn)
 }
 
 func (hub *Hub) CloseAgent(id string) error {
