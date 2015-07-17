@@ -293,7 +293,7 @@ func (hub *Hub) NewWorkerConn(ac *agentConn, connId uint32, timeout time.Duratio
 	for {
 		select {
 		case <-ch:
-			break
+			return nil, errors.New("pangolin: timeout occured")
 		default:
 			conn = hub.GetWorkerConn(connId)
 			if conn != nil {
@@ -302,7 +302,6 @@ func (hub *Hub) NewWorkerConn(ac *agentConn, connId uint32, timeout time.Duratio
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
-	return nil, errors.New("pangolin: timeout occured")
 }
 
 // addr must be the ID of the agent.
