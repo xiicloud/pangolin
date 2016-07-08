@@ -112,12 +112,12 @@ func (hub *Hub) ListenAndServe(addr string) error {
 	return nil
 }
 
-func (hub *Hub) Handle(conn net.Conn) {
+func (hub *Hub) Handle(conn net.Conn) error {
 	cmd, err := hub.p.getAgentCmd(conn)
 	if err != nil {
 		log.Error("pangolin: ", err)
 		conn.Close()
-		return
+		return err
 	}
 	log.Debugf("pangolin: got command %d", cmd)
 
@@ -126,9 +126,11 @@ func (hub *Hub) Handle(conn net.Conn) {
 		if err != nil {
 			log.Error("pangolin: CmdJoin ", err)
 			conn.Close()
+			return err
 		}
+
 		hub.AddAgentConn(agentId, conn)
-		return
+		return nil
 	}
 
 	if cmd >= MinRequestId {
@@ -136,6 +138,7 @@ func (hub *Hub) Handle(conn net.Conn) {
 	} else {
 		conn.Close()
 	}
+	return nil
 }
 
 // Let the server reuse the HTTP port.
@@ -325,6 +328,11 @@ func (hub *Hub) Dial(_, addr string) (net.Conn, error) {
 
 func (hub *Hub) DialTimeout(network, addr string, _ time.Duration) (net.Conn, error) {
 	return hub.Dial(network, addr)
+}
+
+// Used to detect the pangolin protocol.
+func (hub *Hub) Detect(header []byte) bool {
+	return len(header) >= 3 && header[0] == 'P' && header[1] == 'G' && header[2] == 'L'
 }
 
 // Implement net.Addr interface.
