@@ -89,7 +89,7 @@ func (self *Agent) Join() error {
 		return err
 	}
 
-	err = self.p.Join(conn, []byte(self.id))
+	err = self.p.join(conn, []byte(self.id))
 	if err != nil {
 		conn.Close()
 		return err
@@ -103,7 +103,7 @@ func (self *Agent) Join() error {
 func (self *Agent) Serve() error {
 	defer self.conn.Close()
 	for {
-		reqId, err := self.p.GetServerCmd(self.conn)
+		reqId, err := self.p.getServerCmd(self.conn)
 		if err == io.EOF {
 			log.Error("pangolin-agent: command tunnel closed")
 			return err
@@ -141,7 +141,7 @@ func (self *Agent) createWorker(connId uint32) (net.Conn, error) {
 		return nil, err
 	}
 
-	err = self.p.NewWorker(conn, connId, true)
+	err = self.p.newWorker(conn, connId, true)
 	if err != nil {
 		log.Error("pangolin-agent: report connection failed, ", err)
 		conn.Close()

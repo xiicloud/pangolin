@@ -1,10 +1,10 @@
 package pangolin
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
-	"net"
 
 	"github.com/Sirupsen/logrus"
 )
@@ -14,11 +14,12 @@ type Command uint32
 const (
 	CmdJoin      = Command(1)
 	CmdWorker    = Command(2)
+	CmdData      = Command(3)
 	MinRequestId = 100
 	Version      = "1"
 )
 
-var Endian = binary.LittleEndian
+var byteOrder = binary.LittleEndian
 
 type Protocol struct {
 	auth Authenticator
@@ -26,12 +27,12 @@ type Protocol struct {
 
 // JoinId reads the agent ID from the network connection.
 // This function should be called on the server side.
-func (p Protocol) GetAgentId(conn net.Conn) (id string, err error) {
+func (p Protocol) getAgentId(conn io.Reader) (id string, err error) {
 	var (
 		idLen  uint32
 		keyLen uint32
 	)
-	if err = binary.Read(conn, Endian, &idLen); err != nil {
+	if err = binary.Read(conn, byteOrder, &idLen); err != nil {
 		return
 	}
 	if idLen < 1 {
@@ -39,7 +40,7 @@ func (p Protocol) GetAgentId(conn net.Conn) (id string, err error) {
 	}
 
 	idBytes := make([]byte, idLen)
-	if err = binary.Read(conn, Endian, &idBytes); err != nil {
+	if err = binary.Read(conn, byteOrder, &idBytes); err != nil {
 		return
 	}
 
@@ -48,12 +49,12 @@ func (p Protocol) GetAgentId(conn net.Conn) (id string, err error) {
 	}
 
 	// Read the auth credentials.
-	if err = binary.Read(conn, Endian, &keyLen); err != nil {
+	if err = binary.Read(conn, byteOrder, &keyLen); err != nil {
 		return
 	}
 	key := make([]byte, keyLen)
 	if keyLen > 0 {
-		err = binary.Read(conn, Endian, &key)
+		err = binary.Read(conn, byteOrder, &key)
 		if err != nil {
 			return "", err
 		}
@@ -66,7 +67,7 @@ func (p Protocol) GetAgentId(conn net.Conn) (id string, err error) {
 }
 
 // Join sends the agent ID to the server.
-func (p Protocol) Join(conn net.Conn, id []byte) error {
+func (p Protocol) join(conn io.Writer, id []byte) error {
 	if err := p.sendVersion(conn); err != nil {
 		return err
 	}
@@ -82,17 +83,19 @@ func (p Protocol) Join(conn net.Conn, id []byte) error {
 		data = append(data, uint32(len(key)), key)
 	}
 
+	buf := new(bytes.Buffer)
 	for _, v := range data {
-		if err := binary.Write(conn, Endian, v); err != nil {
+		if err := binary.Write(buf, byteOrder, v); err != nil {
 			return err
 		}
 	}
-	return nil
+	_, err := conn.Write(buf.Bytes())
+	return err
 }
 
-// NewWorker sends the new_worker command to the agent
+// newWorker sends the new_worker command to the agent
 // or report the request id to the server.
-func (p Protocol) NewWorker(conn net.Conn, id uint32, sendHeader bool) error {
+func (p Protocol) newWorker(conn io.Writer, id uint32, sendHeader bool) error {
 	if sendHeader {
 		err := p.sendVersion(conn)
 		if err != nil {
@@ -100,39 +103,39 @@ func (p Protocol) NewWorker(conn net.Conn, id uint32, sendHeader bool) error {
 		}
 	}
 
-	return binary.Write(conn, Endian, id)
+	return binary.Write(conn, byteOrder, id)
 }
 
 // GetCmd recognizes the command from the first 4 bytes of the connection.
-func (p Protocol) GetAgentCmd(conn net.Conn) (Command, error) {
+func (p Protocol) getAgentCmd(conn io.Reader) (Command, error) {
 	return p.getCmd(conn, false)
 }
 
 // GetCmd recognizes the command from the first 4 bytes of the connection.
-func (p Protocol) GetServerCmd(conn net.Conn) (Command, error) {
+func (p Protocol) getServerCmd(conn io.Reader) (Command, error) {
 	return p.getCmd(conn, true)
 }
 
-func (p Protocol) getCmd(conn net.Conn, stripHeader bool) (Command, error) {
+func (p Protocol) getCmd(conn io.Reader, stripHeader bool) (Command, error) {
 	if !stripHeader {
 		_ = p.getVersion(conn)
 	}
 	var cmd Command
-	err := binary.Read(conn, Endian, &cmd)
+	err := binary.Read(conn, byteOrder, &cmd)
 	return cmd, err
 }
 
-func (p Protocol) sendVersion(conn net.Conn) error {
+func (p Protocol) sendVersion(conn io.Writer) error {
 	_, err := conn.Write([]byte("PGL" + Version))
 	return err
 }
 
-func (p Protocol) getVersion(conn net.Conn) string {
+func (p Protocol) getVersion(conn io.Reader) string {
 	// discard the protocol marker
 	header := make([]byte, 4)
 	_, err := io.ReadAtLeast(conn, header, 4)
 	if err != nil {
-		logrus.Error("pangolin.getVersion: ", err)
+		logrus.Errorf("pangolin.getVersion: ", err)
 		return ""
 	}
 	return string(header[3:])
