@@ -119,7 +119,6 @@ func (hub *Hub) Handle(conn net.Conn) error {
 		conn.Close()
 		return err
 	}
-	log.Debugf("pangolin: got command %d", cmd)
 
 	if cmd == CmdJoin {
 		agentId, err := hub.p.getAgentId(conn)
@@ -201,8 +200,6 @@ func (hub *Hub) OnlineAgents() map[string]string {
 }
 
 func (hub *Hub) AddWorkerConn(id uint32, conn net.Conn) {
-	log.Debug("pangolin: AddWorkerConn ", id)
-
 	// Close unexpected connection.
 	if !hub.hasPendingWorker(id) {
 		conn.Close()
