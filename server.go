@@ -165,13 +165,14 @@ func (hub *Hub) SetNewAgentCallback(callback newAgentCallback) {
 func (hub *Hub) AddAgentConn(id string, conn net.Conn) {
 	log.Debug("pangolin: add agent ", id)
 	hub.agentsLock.Lock()
-	defer hub.agentsLock.Unlock()
 	oldConn, ok := hub.onlineAgents[id]
 	if ok {
 		// close the stale connection
 		oldConn.Close()
 	}
 	hub.onlineAgents[id] = &agentConn{Conn: conn, p: hub.p}
+	hub.agentsLock.Unlock()
+
 	if hub.newAgentCallback != nil {
 		hub.newAgentCallback(id)
 	}
